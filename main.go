@@ -42,12 +42,26 @@ func run() error {
 		}
 	}
 
-	slog.Info("Analysis complete", "queryCount", stats.queryCount.Load(), "selectCount", stats.selectCount.Load())
+	slog.Info("Analysis complete", "totalQueryCount", stats.queryCount.Load(), "totalSelectCount", stats.selectCount.Load())
 
 	return stats.ForBlockRanges(func(start time.Duration, count int64) error {
-		slog.Info("Selects for block starting at t", "t", start, "selectCount", count)
+		slog.Info("Selects for block", "t", formatBlockDuration(start), "selectCount", count)
 		return nil
 	})
+}
+
+func formatBlockDuration(start time.Duration) string {
+	if start == 0 {
+		return "0-13h"
+	}
+
+	if start == storeGatewayQueryWindowStart {
+		return "12-24h"
+	}
+
+	days := start.Hours() / 24
+
+	return fmt.Sprintf("%vd-%vd", days, days+1)
 }
 
 type statistics struct {
