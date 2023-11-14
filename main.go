@@ -193,7 +193,11 @@ func analyseFile(path string, stats *statistics) error {
 }
 
 func parseAndAnalyseLogLine(line string, stats *statistics) error {
-	logLine, err := parseLogLine(line)
+	logLine, skip, err := parseLogLine(line)
+
+	if skip == true {
+		return nil
+	}
 
 	if err != nil {
 		return fmt.Errorf("parsing log line '%v' failed: %w", line, err)
