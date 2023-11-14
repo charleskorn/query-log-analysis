@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -42,12 +44,28 @@ func run() error {
 		}
 	}
 
-	slog.Info("Analysis complete", "totalQueryCount", stats.queryCount.Load(), "totalSelectCount", stats.selectCount.Load())
+	slog.Info("Analysis complete")
 
-	return stats.ForBlockRanges(func(start time.Duration, count int64) error {
-		slog.Info("Selects for block", "t", formatBlockDuration(start), "selectCount", count)
-		return nil
+	w := csv.NewWriter(os.Stdout)
+	if err := w.Write([]string{"Range", "Select count"}); err != nil {
+		return err
+	}
+
+	err := stats.ForBlockRanges(func(start time.Duration, count int64) error {
+		return w.Write([]string{formatBlockDuration(start), strconv.FormatInt(count, 10)})
 	})
+
+	if err != nil {
+		return err
+	}
+
+	if err := w.WriteAll([][]string{{"Total selects", strconv.FormatInt(stats.selectCount.Load(), 10)}, {"Total queries", strconv.FormatInt(stats.queryCount.Load(), 10)}}); err != nil {
+		return err
+	}
+
+	w.Flush()
+
+	return w.Error()
 }
 
 func formatBlockDuration(start time.Duration) string {
