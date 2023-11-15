@@ -95,7 +95,7 @@ type statistics struct {
 
 func newStatistics() *statistics {
 	return &statistics{
-		blockRangesQueried: make([]atomic.Int64, 366), // 365 days, but first day is split into 0-13h and 12-24h blocks.
+		blockRangesQueried: make([]atomic.Int64, 396), // 13 months (395 days), but first day is split into 0-13h and 12-24h blocks.
 	}
 }
 
