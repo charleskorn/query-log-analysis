@@ -69,17 +69,14 @@ func run() error {
 }
 
 func formatBlockDuration(start time.Duration) string {
-	if start == 0 {
-		return "0-13h"
-	}
+	return fmt.Sprintf("%v-%v", formatDuration(start), formatDuration(start+time.Hour))
+}
 
-	if start == storeGatewayQueryWindowStart {
-		return "12-24h"
-	}
+func formatDuration(d time.Duration) string {
+	days := math.Floor(d.Hours() / 24)
+	hours := (d - time.Duration(days)*24*time.Hour).Hours()
 
-	days := start.Hours() / 24
-
-	return fmt.Sprintf("%vd-%vd", days, days+1)
+	return fmt.Sprintf("%vd%vh", days, hours)
 }
 
 type statistics struct {

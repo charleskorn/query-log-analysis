@@ -231,3 +231,19 @@ func requireBlockRangesQueried(t *testing.T, stats *statistics, expected map[tim
 
 	require.Equal(t, expected, actual)
 }
+
+func TestFormatBlockDuration(t *testing.T) {
+	testCases := map[time.Duration]string{
+		0:              "0d0h-0d1h",
+		1 * time.Hour:  "0d1h-0d2h",
+		23 * time.Hour: "0d23h-1d0h",
+		24 * time.Hour: "1d0h-1d1h",
+		48 * time.Hour: "2d0h-2d1h",
+	}
+
+	for input, output := range testCases {
+		t.Run(input.String(), func(t *testing.T) {
+			require.Equal(t, output, formatBlockDuration(input))
+		})
+	}
+}
