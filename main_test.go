@@ -13,80 +13,33 @@ func TestStatistics(t *testing.T) {
 	s.IncrementBlockRanges(-1*time.Hour, -10*time.Minute)
 	requireBlockRangesQueried(t, s, map[time.Duration]int64{})
 
-	// Query range before 12h cutoff
-	s.IncrementBlockRanges(0, 11*time.Hour)
+	s.IncrementBlockRanges(0, 2*time.Hour)
 	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0: 1,
+		0:             1,
+		1 * time.Hour: 1,
 	})
 
-	// Query range overlaps 12h cutoff
-	s.IncrementBlockRanges(1*time.Hour, 14*time.Hour)
+	s.IncrementBlockRanges(1*time.Hour, 2*time.Hour)
 	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              2,
-		12 * time.Hour: 1,
+		0:             1,
+		1 * time.Hour: 2,
 	})
 
-	s.IncrementBlockRanges(1*time.Hour, 49*time.Hour)
+	// Start not aligned to hour
+	s.IncrementBlockRanges(1*time.Hour+time.Minute, 3*time.Hour)
 	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              3,
-		12 * time.Hour: 2,
-		24 * time.Hour: 1,
-		48 * time.Hour: 1,
+		0:             1,
+		1 * time.Hour: 3,
+		2 * time.Hour: 1,
 	})
 
-	s.IncrementBlockRanges(12*time.Hour, 49*time.Hour)
+	// End not aligned to hour
+	s.IncrementBlockRanges(1*time.Hour, 3*time.Hour+time.Minute)
 	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              4,
-		12 * time.Hour: 3,
-		24 * time.Hour: 2,
-		48 * time.Hour: 2,
-	})
-
-	s.IncrementBlockRanges(24*time.Hour, 49*time.Hour)
-	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              4,
-		12 * time.Hour: 3,
-		24 * time.Hour: 3,
-		48 * time.Hour: 3,
-	})
-
-	s.IncrementBlockRanges(27*time.Hour, 49*time.Hour)
-	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              4,
-		12 * time.Hour: 3,
-		24 * time.Hour: 4,
-		48 * time.Hour: 4,
-	})
-
-	// Inside single block ranges
-	s.IncrementBlockRanges(13*time.Hour, 20*time.Hour)
-	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              4,
-		12 * time.Hour: 4,
-		24 * time.Hour: 4,
-		48 * time.Hour: 4,
-	})
-
-	s.IncrementBlockRanges(25*time.Hour, 26*time.Hour)
-	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:              4,
-		12 * time.Hour: 4,
-		24 * time.Hour: 5,
-		48 * time.Hour: 4,
-	})
-
-	// Beyond end of range
-	s.IncrementBlockRanges(360*24*time.Hour, 370*24*time.Hour)
-	requireBlockRangesQueried(t, s, map[time.Duration]int64{
-		0:                    4,
-		12 * time.Hour:       4,
-		24 * time.Hour:       5,
-		48 * time.Hour:       4,
-		360 * 24 * time.Hour: 1,
-		361 * 24 * time.Hour: 1,
-		362 * 24 * time.Hour: 1,
-		363 * 24 * time.Hour: 1,
-		364 * 24 * time.Hour: 1,
+		0:             1,
+		1 * time.Hour: 4,
+		2 * time.Hour: 2,
+		3 * time.Hour: 1,
 	})
 }
 
@@ -111,7 +64,8 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 1,
+				46 * time.Hour: 1,
+				47 * time.Hour: 1, // For lookback window
 			},
 		},
 		"single select, range query touching multiple blocks": {
@@ -120,14 +74,15 @@ func TestQueryAnalysis(t *testing.T) {
 				query:     "metric{}",
 
 				isRangeQuery:   true,
-				queryStartTime: baseTimestamp.Add(-49 * time.Hour),
+				queryStartTime: baseTimestamp.Add(-29 * time.Hour),
 				queryEndTime:   baseTimestamp.Add(-27 * time.Hour),
 				queryStep:      30 * time.Second,
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 1,
-				48 * time.Hour: 1,
+				27 * time.Hour: 1,
+				28 * time.Hour: 1,
+				29 * time.Hour: 1,
 			},
 		},
 		"single select, range query with range selector": {
@@ -142,8 +97,9 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 1,
+				47 * time.Hour: 1,
 				48 * time.Hour: 1,
+				49 * time.Hour: 1, // For lookback window.
 			},
 		},
 		"single select, instant query": {
@@ -156,7 +112,7 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 1,
+				47 * time.Hour: 1,
 			},
 		},
 		"single select, instant query with range selector": {
@@ -169,7 +125,7 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 1,
+				47 * time.Hour: 1,
 				48 * time.Hour: 1,
 			},
 		},
@@ -185,7 +141,8 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 2,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				24 * time.Hour: 2,
+				46 * time.Hour: 2,
+				47 * time.Hour: 2, // For lookback window.
 			},
 		},
 		"no selects": {
@@ -213,7 +170,9 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				0: 1,
+				1 * time.Hour: 1,
+				2 * time.Hour: 1,
+				3 * time.Hour: 1,
 			},
 		},
 		"single select, for ingester and store-gateway query time range": {
@@ -228,8 +187,21 @@ func TestQueryAnalysis(t *testing.T) {
 			},
 			expectedSelectCount: 1,
 			expectedBlockRangesQueried: map[time.Duration]int64{
-				0:              1,
+				1 * time.Hour:  1,
+				2 * time.Hour:  1,
+				3 * time.Hour:  1,
+				4 * time.Hour:  1,
+				5 * time.Hour:  1,
+				6 * time.Hour:  1,
+				7 * time.Hour:  1,
+				8 * time.Hour:  1,
+				9 * time.Hour:  1,
+				10 * time.Hour: 1,
+				11 * time.Hour: 1,
 				12 * time.Hour: 1,
+				13 * time.Hour: 1,
+				14 * time.Hour: 1,
+				15 * time.Hour: 1,
 			},
 		},
 	}

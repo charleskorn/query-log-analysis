@@ -38,7 +38,7 @@ type queryRangeCollectingQuerier struct {
 }
 
 func (q *queryRangeCollectingQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
-	q.stats.selectCount.Add(1)
+
 	q.stats.IncrementBlockRanges(q.from, q.to)
 
 	return storage.EmptySeriesSet()

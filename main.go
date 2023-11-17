@@ -95,7 +95,7 @@ type statistics struct {
 
 func newStatistics() *statistics {
 	return &statistics{
-		blockRangesQueried: make([]atomic.Int64, 396), // 13 months (395 days), but first day is split into 0-13h and 12-24h blocks.
+		blockRangesQueried: make([]atomic.Int64, 40*24), // 40 days * 24 hours
 	}
 }
 
@@ -107,18 +107,12 @@ func (s *statistics) IncrementBlockRanges(from, to time.Duration) {
 		panic(fmt.Sprintf("from time (%v) after to time (%v)", from, to))
 	}
 
-	if to < 0 {
-		return
-	}
+	s.selectCount.Add(1)
 
-	if from < ingesterQueryWindowEnd {
-		s.blockRangesQueried[0].Add(1)
-	}
-
-	currentBlock := max(12*time.Hour, from)
+	currentBlock := max(0, from)
 
 	for currentBlock < to {
-		i := (currentBlock / (24 * time.Hour)) + 1
+		i := currentBlock / time.Hour
 
 		if int(i) >= len(s.blockRangesQueried) {
 			// Reached the end of 365 day range. We're done.
@@ -127,25 +121,19 @@ func (s *statistics) IncrementBlockRanges(from, to time.Duration) {
 
 		s.blockRangesQueried[i].Add(1)
 
-		if currentBlock%(24*time.Hour) == 0 {
+		if currentBlock%(time.Hour) == 0 {
 			// Already on a block boundary, advance to next block.
-			currentBlock += 24 * time.Hour
+			currentBlock += time.Hour
 		} else {
 			// Not at a block boundary, advance to beginning of next block.
-			currentBlock += (24 * time.Hour) - (currentBlock % (24 * time.Hour))
+			currentBlock += time.Hour - (currentBlock % time.Hour)
 		}
 	}
 }
 
 func (s *statistics) ForBlockRanges(f func(start time.Duration, count int64) error) error {
 	for i := range s.blockRangesQueried {
-		start := time.Duration((i-1)*24) * time.Hour
-
-		if i == 0 {
-			start = 0
-		} else if i == 1 {
-			start = storeGatewayQueryWindowStart
-		}
+		start := time.Duration(i) * time.Hour
 
 		if err := f(start, s.blockRangesQueried[i].Load()); err != nil {
 			return err
