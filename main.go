@@ -2,20 +2,14 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/go-kit/log"
-	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
 	"io"
 	"log/slog"
-	"math"
 	"os"
-	"strconv"
-	"sync/atomic"
 	"time"
 )
 
@@ -34,33 +28,31 @@ func run() error {
 		return errors.New("no paths specified")
 	}
 
-	stats := newStatistics()
+	var results []queryInfo
 
 	for _, path := range paths {
 		slog.Info("Analysing file", "path", path)
 
-		if err := analyseFile(path, stats); err != nil {
+		fileResults, err := analyseFile(path)
+
+		if err != nil {
 			return fmt.Errorf("analysing file %v failed: %w", path, err)
 		}
+
+		results = append(results, fileResults...)
 	}
 
 	slog.Info("Analysis complete")
 
 	w := csv.NewWriter(os.Stdout)
-	if err := w.Write([]string{"Range", "Select count"}); err != nil {
+	if err := w.Write([]string{"Timestamp", "Original query", "Query type", "Cleaned query"}); err != nil {
 		return err
 	}
 
-	err := stats.ForBlockRanges(func(start time.Duration, count int64) error {
-		return w.Write([]string{formatBlockDuration(start), strconv.FormatInt(count, 10)})
-	})
-
-	if err != nil {
-		return err
-	}
-
-	if err := w.WriteAll([][]string{{"Total selects", strconv.FormatInt(stats.selectCount.Load(), 10)}, {"Total queries", strconv.FormatInt(stats.queryCount.Load(), 10)}}); err != nil {
-		return err
+	for _, q := range results {
+		if err := w.Write([]string{q.timestamp.Format(time.RFC3339Nano), q.originalQuery, q.queryType, q.cleanedQuery}); err != nil {
+			return err
+		}
 	}
 
 	w.Flush()
@@ -68,85 +60,25 @@ func run() error {
 	return w.Error()
 }
 
-func formatBlockDuration(start time.Duration) string {
-	return fmt.Sprintf("%v-%v", formatDuration(start), formatDuration(start+time.Hour))
+type queryInfo struct {
+	timestamp     time.Time
+	originalQuery string
+	queryType     string // "instant" or "range"
+	cleanedQuery  string
 }
 
-func formatDuration(d time.Duration) string {
-	days := math.Floor(d.Hours() / 24)
-	hours := (d - time.Duration(days)*24*time.Hour).Hours()
-
-	return fmt.Sprintf("%vd%vh", days, hours)
-}
-
-type statistics struct {
-	queryCount  atomic.Int64
-	selectCount atomic.Int64
-
-	// Blocks queried.
-	// Entry 0 is the "0-13h ago" block for queries to ingesters.
-	// Entry 1 is the "12-24h ago" block.
-	// Subsequent entries are for following 24h periods (24-48h, 48-72h, ...)
-	blockRangesQueried []atomic.Int64
-}
-
-func newStatistics() *statistics {
-	return &statistics{
-		blockRangesQueried: make([]atomic.Int64, 396), // 13 months (395 days), but first day is split into 0-13h and 12-24h blocks.
-	}
-}
-
-func (s *statistics) IncrementBlockRanges(from, to time.Duration) {
-	if from > to {
-		panic(fmt.Sprintf("from time (%v) after to time (%v)", from, to))
-	}
-
-	s.selectCount.Add(1)
-
-	currentBlock := max(0, from)
-
-	for currentBlock < to {
-		i := currentBlock / time.Hour
-
-		if int(i) >= len(s.blockRangesQueried) {
-			// Reached the end of 365 day range. We're done.
-			return
-		}
-
-		s.blockRangesQueried[i].Add(1)
-
-		if currentBlock%(time.Hour) == 0 {
-			// Already on a block boundary, advance to next block.
-			currentBlock += time.Hour
-		} else {
-			// Not at a block boundary, advance to beginning of next block.
-			currentBlock += time.Hour - (currentBlock % time.Hour)
-		}
-	}
-}
-
-func (s *statistics) ForBlockRanges(f func(start time.Duration, count int64) error) error {
-	for i := range s.blockRangesQueried {
-		start := time.Duration(i) * time.Hour
-
-		if err := f(start, s.blockRangesQueried[i].Load()); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func analyseFile(path string, stats *statistics) error {
+func analyseFile(path string) ([]queryInfo, error) {
 	f, err := os.Open(path)
 
 	if err != nil {
-		return fmt.Errorf("could not open file: %w", err)
+		return nil, fmt.Errorf("could not open file: %w", err)
 	}
 
 	defer f.Close()
 
 	r := bufio.NewReader(f)
+	lineNumber := 0
+	var results []queryInfo
 
 	for {
 		l := ""
@@ -155,10 +87,10 @@ func analyseFile(path string, stats *statistics) error {
 			portion, isPrefix, err := r.ReadLine()
 			if err != nil {
 				if err == io.EOF {
-					return nil
+					return results, nil
 				}
 
-				return err
+				return nil, err
 			}
 
 			l += string(portion)
@@ -168,73 +100,155 @@ func analyseFile(path string, stats *statistics) error {
 			}
 		}
 
-		if err := parseAndAnalyseLogLine(l, stats); err != nil {
-			return err
+		lineNumber++
+		result, skip, err := parseAndAnalyseLogLine(l)
+
+		if err != nil {
+			return nil, fmt.Errorf("line %v: %w", lineNumber, err)
+		}
+
+		if !skip {
+			results = append(results, result)
 		}
 	}
 }
 
-func parseAndAnalyseLogLine(line string, stats *statistics) error {
+func parseAndAnalyseLogLine(line string) (queryInfo, bool, error) {
 	logLine, skip, err := parseLogLine(line)
 
 	if skip == true {
-		return nil
+		return queryInfo{}, true, nil
 	}
 
 	if err != nil {
-		return fmt.Errorf("parsing log line '%v' failed: %w", line, err)
+		return queryInfo{}, false, fmt.Errorf("parsing log line '%v' failed: %w", line, err)
 	}
 
-	return analyseLogLine(logLine, stats)
+	info, err := analyseLogLine(logLine)
+	return info, false, err
 }
 
-var engine = promql.NewEngine(promql.EngineOpts{
-	Logger:        log.NewNopLogger(),
-	LookbackDelta: 5 * time.Minute, // Default value.
-	NoStepSubqueryIntervalFn: func(int64) int64 {
-		return durationToInt64Millis(time.Duration(config.DefaultGlobalConfig.EvaluationInterval))
-	},
-	Timeout:    time.Minute,
-	MaxSamples: math.MaxInt,
+func analyseLogLine(logLine logLine) (queryInfo, error) {
+	p := parser.NewParser(logLine.query)
+	defer p.Close()
+	expr, err := p.ParseExpr()
 
-	// Default values as of Prometheus v2.33:
-	EnableAtModifier:     true,
-	EnableNegativeOffset: true,
-})
-
-var queryOpts = promql.NewPrometheusQueryOpts(false, 0)
-
-func analyseLogLine(logLine logLine, stats *statistics) error {
-	stats.queryCount.Add(1)
-
-	queryable := &queryRangeCollectingQueryable{
-		stats:          stats,
-		queryTimestamp: logLine.timestamp,
+	if err != nil {
+		return queryInfo{}, fmt.Errorf("could not parse query '%s': %w", logLine.query, err)
 	}
 
-	var q promql.Query
-	var err error
+	if err := cleanExpr(expr); err != nil {
+		return queryInfo{}, fmt.Errorf("could not clean query '%s': %w", logLine.query, err)
+	}
+
+	info := queryInfo{
+		timestamp:     logLine.timestamp,
+		originalQuery: logLine.query,
+		cleanedQuery:  expr.String(),
+	}
 
 	if logLine.isRangeQuery {
-		q, err = engine.NewRangeQuery(context.Background(), queryable, queryOpts, logLine.query, logLine.queryStartTime, logLine.queryEndTime, logLine.queryStep)
+		info.queryType = "range"
 	} else {
-		q, err = engine.NewInstantQuery(context.Background(), queryable, queryOpts, logLine.query, logLine.queryTime)
+		info.queryType = "instant"
 	}
 
-	if err != nil {
-		return fmt.Errorf("could not create query: %w", err)
-	}
-
-	defer q.Close()
-	result := q.Exec(context.Background())
-
-	if result.Err != nil {
-		return fmt.Errorf("query execution failed: %w", result.Err)
-	}
-
-	return nil
+	return info, nil
 }
 
-func durationToInt64Millis(d time.Duration) int64 {
-	return int64(d / time.Millisecond)
+func cleanExpr(expr parser.Expr) error {
+	switch e := expr.(type) {
+	case nil:
+		return nil
+
+	case *parser.AggregateExpr:
+		if err := cleanExpr(e.Expr); err != nil {
+			return err
+		}
+
+		if err := cleanExpr(e.Param); err != nil {
+			return err
+		}
+
+		if len(e.Grouping) > 0 {
+			e.Grouping = []string{"labels"}
+		}
+
+		return nil
+
+	case *parser.BinaryExpr:
+		if err := cleanExpr(e.LHS); err != nil {
+			return err
+		}
+
+		if err := cleanExpr(e.RHS); err != nil {
+			return err
+		}
+
+		if e.VectorMatching != nil {
+			if len(e.VectorMatching.MatchingLabels) > 0 {
+				e.VectorMatching.MatchingLabels = []string{"labels"}
+			}
+
+			if len(e.VectorMatching.Include) > 0 {
+				e.VectorMatching.Include = []string{"labels"}
+			}
+		}
+
+		return nil
+
+	case *parser.Call:
+		for _, arg := range e.Args {
+			if err := cleanExpr(arg); err != nil {
+				return err
+			}
+		}
+
+		return nil
+
+	case *parser.MatrixSelector:
+		e.Range = time.Minute
+		return cleanExpr(e.VectorSelector)
+
+	case *parser.SubqueryExpr:
+		if e.Timestamp != nil {
+			t := int64(123)
+			e.Timestamp = &t
+		}
+
+		// TODO: offset (either timestamp, start() or end())
+
+		e.Step = time.Minute
+		e.Range = time.Hour
+
+		return cleanExpr(e.Expr)
+
+	case *parser.NumberLiteral:
+		e.Val = 123
+		return nil
+
+	case *parser.ParenExpr:
+		return cleanExpr(e.Expr)
+
+	case *parser.StringLiteral:
+		e.Val = "abc"
+		return nil
+
+	case *parser.UnaryExpr:
+		return cleanExpr(e.Expr)
+
+	case *parser.StepInvariantExpr:
+		return cleanExpr(e.Expr)
+
+	case *parser.VectorSelector:
+		// TODO: timestamp, offset (either timestamp, start() or end())
+
+		e.Name = "metric"
+		e.LabelMatchers = nil
+
+		return nil
+
+	default:
+		return fmt.Errorf("unknown expression type %T", expr)
+	}
 }
