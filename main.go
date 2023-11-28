@@ -92,12 +92,9 @@ type statistics struct {
 
 func newStatistics() *statistics {
 	return &statistics{
-		blockRangesQueried: make([]atomic.Int64, 40*24), // 40 days * 24 hours
+		blockRangesQueried: make([]atomic.Int64, 396), // 13 months (395 days), but first day is split into 0-13h and 12-24h blocks.
 	}
 }
-
-const ingesterQueryWindowEnd = 13 * time.Hour
-const storeGatewayQueryWindowStart = 12 * time.Hour
 
 func (s *statistics) IncrementBlockRanges(from, to time.Duration) {
 	if from > to {
